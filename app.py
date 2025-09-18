@@ -595,8 +595,7 @@ try:
     if nfl_updater:
         logger.info("✅ NFL auto-updater integrated successfully")
         
-        # Run initial update on startup
-        @app.before_first_request
+        # Run initial update on startup (modern Flask approach)
         def initial_nfl_update():
             try:
                 logger.info("🔄 Running initial NFL data update...")
@@ -607,6 +606,16 @@ try:
                     logger.warning(f"⚠️ Initial NFL update had errors: {results['errors']}")
             except Exception as e:
                 logger.warning(f"Initial NFL update failed: {e}")
+        
+        # Schedule initial update to run after app starts
+        import threading
+        def delayed_update():
+            import time
+            time.sleep(2)  # Wait for app to fully start
+            with app.app_context():
+                initial_nfl_update()
+        
+        threading.Thread(target=delayed_update, daemon=True).start()
     else:
         logger.warning("⚠️ NFL auto-updater integration failed")
         
