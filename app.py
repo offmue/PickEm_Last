@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-NFL PickEm 2025/2026 - GitHub/Render Deployment Version
-Clean production version with all fixes applied
+NFL PickEm 2025/2026 - Enhanced Version with Historical Week View
+Complete production version with auto-updates and week selection
 """
 
 import os
@@ -126,7 +126,7 @@ def init_database():
             for user in users:
                 db.session.add(user)
             
-            # Add sample teams
+            # Add sample teams (will be updated by auto-updater)
             teams_data = [
                 (1, 'Arizona Cardinals', 'ARI', 'https://a.espncdn.com/i/teamlogos/nfl/500/ari.png'),
                 (2, 'Atlanta Falcons', 'ATL', 'https://a.espncdn.com/i/teamlogos/nfl/500/atl.png'),
@@ -165,24 +165,6 @@ def init_database():
             for team_id, name, abbr, logo in teams_data:
                 team = Team(id=team_id, name=name, abbreviation=abbr, logo_url=logo)
                 db.session.add(team)
-            
-            # Add sample Week 3 matches
-            matches_data = [
-                (1, 3, 1, 28, "2025-09-21 22:25:00"),  # Cardinals @ 49ers
-                (2, 3, 2, 5, "2025-09-22 19:00:00"),   # Falcons @ Panthers
-                (3, 3, 7, 21, "2025-09-22 19:00:00"),  # Bengals @ Vikings
-                (4, 3, 9, 6, "2025-09-22 19:00:00"),   # Cowboys @ Bears
-                (5, 3, 10, 18, "2025-09-22 22:05:00"), # Broncos @ Chargers
-                (6, 3, 11, 3, "2025-09-22 19:00:00"),  # Lions @ Ravens
-                (7, 3, 12, 8, "2025-09-22 19:00:00"),  # Packers @ Browns
-                (8, 3, 13, 15, "2025-09-22 19:00:00"), # Texans @ Jaguars
-                (9, 3, 14, 31, "2025-09-22 19:00:00"), # Colts @ Titans
-                (10, 3, 16, 24, "2025-09-22 22:25:00") # Chiefs @ Giants
-            ]
-            
-            for match_id, week, away_id, home_id, game_time in matches_data:
-                match = Match(id=match_id, week=week, away_team_id=away_id, home_team_id=home_id, game_time=game_time)
-                db.session.add(match)
             
             # Add historical picks (W1+W2 results)
             historical_data = [
@@ -265,6 +247,52 @@ def logout():
     session.clear()
     return jsonify({'success': True, 'message': 'Erfolgreich abgemeldet'})
 
+@app.route('/api/available-weeks')
+def available_weeks():
+    """Get all available weeks for dropdown selection"""
+    try:
+        # Get weeks from matches table
+        weeks_query = db.session.query(Match.week).distinct().order_by(Match.week).all()
+        match_weeks = [w[0] for w in weeks_query]
+        
+        # Get weeks from historical picks
+        historical_weeks_query = db.session.query(HistoricalPick.week).distinct().order_by(HistoricalPick.week).all()
+        historical_weeks = [w[0] for w in historical_weeks_query]
+        
+        # Combine and sort all available weeks
+        all_weeks = sorted(list(set(match_weeks + historical_weeks)))
+        
+        # Determine current week (highest week with games)
+        current_week = max(match_weeks) if match_weeks else 3
+        
+        weeks_info = []
+        for week in all_weeks:
+            # Check if week is completed
+            completed_matches = Match.query.filter_by(week=week, is_completed=True).count()
+            total_matches = Match.query.filter_by(week=week).count()
+            historical_picks = HistoricalPick.query.filter_by(week=week).count()
+            
+            status = 'completed' if (completed_matches == total_matches and total_matches > 0) or historical_picks > 0 else 'active'
+            if week > current_week:
+                status = 'upcoming'
+            
+            weeks_info.append({
+                'week': week,
+                'status': status,
+                'games_count': total_matches,
+                'completed_games': completed_matches
+            })
+        
+        return jsonify({
+            'success': True,
+            'weeks': weeks_info,
+            'current_week': current_week
+        })
+        
+    except Exception as e:
+        logger.error(f"Available weeks error: {e}")
+        return jsonify({'success': False, 'message': 'Fehler beim Laden der verfügbaren Wochen'}), 500
+
 @app.route('/api/dashboard')
 def dashboard():
     try:
@@ -335,32 +363,67 @@ def matches():
     try:
         week = request.args.get('week', 3, type=int)
         
+        # Get matches from database
         matches = Match.query.filter_by(week=week).all()
         matches_data = []
+        
+        # Get historical picks for this week if it's a completed week
+        historical_picks = {}
+        if week <= 2:  # Historical weeks
+            picks = HistoricalPick.query.filter_by(week=week).all()
+            for pick in picks:
+                if pick.team_id not in historical_picks:
+                    historical_picks[pick.team_id] = []
+                historical_picks[pick.team_id].append({
+                    'user': pick.user.display_name,
+                    'correct': pick.is_correct
+                })
+        
+        # Get current picks for this week
+        current_picks = {}
+        if week >= 3:  # Current/future weeks
+            picks = Pick.query.filter_by(week=week).all()
+            for pick in picks:
+                if pick.team_id not in current_picks:
+                    current_picks[pick.team_id] = []
+                current_picks[pick.team_id].append({
+                    'user': pick.user.display_name,
+                    'correct': pick.is_correct
+                })
         
         for match in matches:
             # Convert game time to Vienna timezone
             game_time = datetime.fromisoformat(match.game_time.replace('Z', '+00:00'))
             vienna_time = game_time.astimezone(VIENNA_TZ)
             
-            matches_data.append({
+            # Get picks for both teams
+            away_picks = historical_picks.get(match.away_team.id, []) + current_picks.get(match.away_team.id, [])
+            home_picks = historical_picks.get(match.home_team.id, []) + current_picks.get(match.home_team.id, [])
+            
+            match_data = {
                 'id': match.id,
                 'week': match.week,
                 'away_team': {
                     'id': match.away_team.id,
                     'name': match.away_team.name,
                     'abbreviation': match.away_team.abbreviation,
-                    'logo_url': match.away_team.logo_url
+                    'logo_url': match.away_team.logo_url,
+                    'picks': away_picks,
+                    'score': match.away_score
                 },
                 'home_team': {
                     'id': match.home_team.id,
                     'name': match.home_team.name,
                     'abbreviation': match.home_team.abbreviation,
-                    'logo_url': match.home_team.logo_url
+                    'logo_url': match.home_team.logo_url,
+                    'picks': home_picks,
+                    'score': match.home_score
                 },
                 'game_time': vienna_time.strftime('%a., %d.%m, %H:%M'),
                 'is_completed': match.is_completed
-            })
+            }
+            
+            matches_data.append(match_data)
         
         return jsonify({'success': True, 'matches': matches_data})
         
@@ -382,6 +445,10 @@ def create_pick():
         
         if not match_id or not team_id:
             return jsonify({'success': False, 'message': 'Match ID und Team ID erforderlich'}), 400
+        
+        # Check if week is still open for picks
+        if week <= 2:
+            return jsonify({'success': False, 'message': 'Diese Woche ist bereits abgeschlossen'}), 400
         
         # Check team usage limits
         team_usage = TeamUsage.query.filter_by(user_id=user_id, team_id=team_id).all()
@@ -500,6 +567,39 @@ def all_picks():
 
 # Initialize database on startup
 init_database()
+
+# Import and integrate NFL auto-updater
+try:
+    import sys
+    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    from flask_auto_updater import integrate_nfl_auto_updater
+    
+    # Set database path for auto-updater
+    app.config['DATABASE_PATH'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'nfl_pickem.db')
+    
+    # Integrate auto-updater
+    nfl_updater = integrate_nfl_auto_updater(app)
+    
+    if nfl_updater:
+        logger.info("✅ NFL auto-updater integrated successfully")
+        
+        # Run initial update on startup
+        @app.before_first_request
+        def initial_nfl_update():
+            try:
+                logger.info("🔄 Running initial NFL data update...")
+                results = nfl_updater.updater.run_auto_update()
+                if results['success']:
+                    logger.info("✅ Initial NFL update completed")
+                else:
+                    logger.warning(f"⚠️ Initial NFL update had errors: {results['errors']}")
+            except Exception as e:
+                logger.warning(f"Initial NFL update failed: {e}")
+    else:
+        logger.warning("⚠️ NFL auto-updater integration failed")
+        
+except ImportError as e:
+    logger.warning(f"NFL auto-updater not available: {e}")
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
