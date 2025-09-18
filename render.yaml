@@ -1,9 +1,9 @@
 services:
   - type: web
-    name: nfl-pickem-2025
+    name: nfl-pickem-2025-v3
     env: python
     buildCommand: pip install -r requirements.txt
-    startCommand: python app.py
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT
     envVars:
       - key: PORT
         value: 10000
