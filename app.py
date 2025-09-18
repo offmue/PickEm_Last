@@ -162,11 +162,19 @@ def init_database():
                 (32, 'Washington Commanders', 'WAS', 'https://a.espncdn.com/i/teamlogos/nfl/500/was.png')
             ]
             
+            # Add teams with merge logic to avoid UNIQUE constraint errors
             for team_id, name, abbr, logo in teams_data:
-                team = Team(id=team_id, name=name, abbreviation=abbr, logo_url=logo)
-                db.session.add(team)
+                existing_team = Team.query.filter_by(id=team_id).first()
+                if not existing_team:
+                    team = Team(id=team_id, name=name, abbreviation=abbr, logo_url=logo)
+                    db.session.add(team)
+                else:
+                    # Update existing team data
+                    existing_team.name = name
+                    existing_team.abbreviation = abbr
+                    existing_team.logo_url = logo
             
-            # Add historical picks (W1+W2 results)
+            # Add historical picks (W1+W2 results) - avoid duplicates
             historical_data = [
                 (1, 1, 'Atlanta Falcons', 2, False),    # Manuel W1 Falcons (lost)
                 (1, 2, 'Dallas Cowboys', 9, True),      # Manuel W2 Cowboys (won)
@@ -179,10 +187,12 @@ def init_database():
             ]
             
             for user_id, week, team_name, team_id, is_correct in historical_data:
-                pick = HistoricalPick(user_id=user_id, week=week, team_name=team_name, team_id=team_id, is_correct=is_correct)
-                db.session.add(pick)
+                existing_pick = HistoricalPick.query.filter_by(user_id=user_id, week=week).first()
+                if not existing_pick:
+                    pick = HistoricalPick(user_id=user_id, week=week, team_name=team_name, team_id=team_id, is_correct=is_correct)
+                    db.session.add(pick)
             
-            # Add team usage based on historical picks
+            # Add team usage based on historical picks - avoid duplicates
             team_usage_data = [
                 (1, 9, 'winner', 2),   # Manuel: Cowboys as winner W2
                 (2, 10, 'winner', 1),  # Daniel: Broncos as winner W1
@@ -194,8 +204,10 @@ def init_database():
             ]
             
             for user_id, team_id, usage_type, week in team_usage_data:
-                usage = TeamUsage(user_id=user_id, team_id=team_id, usage_type=usage_type, week=week)
-                db.session.add(usage)
+                existing_usage = TeamUsage.query.filter_by(user_id=user_id, team_id=team_id, usage_type=usage_type, week=week).first()
+                if not existing_usage:
+                    usage = TeamUsage(user_id=user_id, team_id=team_id, usage_type=usage_type, week=week)
+                    db.session.add(usage)
             
             db.session.commit()
             logger.info("✅ Database initialized with sample data")
